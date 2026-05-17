@@ -19,21 +19,17 @@ M.known = {
 --- Async — calls cb(installed: string[]) when done.
 --- @param cb fun(installed: string[])
 function M.installed(cb)
-  local lines = { "" }
-  vim.fn.jobstart({ "pi", "list" }, {
-    stdout_buffered = true,
-    on_stdout = function(_, data) vim.list_extend(lines, data) end,
-    on_exit   = function()
+  vim.system({ "pi", "list" }, { text = true }, function(obj)
+    vim.schedule(function()
       local installed = {}
-      for _, line in ipairs(lines) do
-        -- Match "  npm:plan-mode" or "  git:..." indented source lines
+      for _, line in ipairs(vim.split(obj.stdout or "", "\n", { plain = true })) do
         local src = line:match("^%s+(npm:[%w%-%.@/]+)")
                or line:match("^%s+(git:[%S]+)")
         if src then table.insert(installed, src) end
       end
       cb(installed)
-    end,
-  })
+    end)
+  end)
 end
 
 --- Merge known packages with installed list.
@@ -83,14 +79,14 @@ function M.ensure(desired)
     for _, src in ipairs(desired) do
       if not inst_set[src] then
         vim.notify("pivi: installing " .. src .. "…", vim.log.levels.INFO)
-        vim.fn.jobstart({ "pi", "install", src }, {
-          on_exit = function(_, code)
+        vim.system({ "pi", "install", src }, {}, function(obj)
+          vim.schedule(function()
             vim.notify(
-              code == 0 and ("pivi: installed " .. src) or ("pivi: failed to install " .. src),
-              code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
+              obj.code == 0 and ("pivi: installed " .. src) or ("pivi: failed to install " .. src),
+              obj.code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
             )
-          end,
-        })
+          end)
+        end)
       end
     end
   end)
@@ -99,21 +95,17 @@ end
 --- @param source string
 --- @param cb? fun(ok: boolean)
 function M.install(source, cb)
-  vim.fn.jobstart({ "pi", "install", source }, {
-    on_exit = function(_, code)
-      if cb then cb(code == 0) end
-    end,
-  })
+  vim.system({ "pi", "install", source }, {}, function(obj)
+    vim.schedule(function() if cb then cb(obj.code == 0) end end)
+  end)
 end
 
 --- @param source string
 --- @param cb? fun(ok: boolean)
 function M.remove(source, cb)
-  vim.fn.jobstart({ "pi", "remove", source }, {
-    on_exit = function(_, code)
-      if cb then cb(code == 0) end
-    end,
-  })
+  vim.system({ "pi", "remove", source }, {}, function(obj)
+    vim.schedule(function() if cb then cb(obj.code == 0) end end)
+  end)
 end
 
 return M

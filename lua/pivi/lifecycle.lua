@@ -157,20 +157,19 @@ end
 --- @param cb? fun(ok: boolean)
 function M.update(cb)
   vim.notify("pivi: running pi update…", vim.log.levels.INFO)
-  vim.fn.jobstart({ "pi", "update" }, {
-    stdout_buffered = true,
-    on_exit = function(_, code)
-      if code == 0 then
+  vim.system({ "pi", "update" }, { text = true }, function(obj)
+    vim.schedule(function()
+      if obj.code == 0 then
         vim.notify(
           "pivi: update complete — restart Pi to apply (:PiviStop then :PiviLaunch)",
           vim.log.levels.INFO
         )
       else
-        vim.notify("pivi: update failed (exit " .. code .. ")", vim.log.levels.ERROR)
+        vim.notify("pivi: update failed (exit " .. obj.code .. ")", vim.log.levels.ERROR)
       end
-      if cb then cb(code == 0) end
-    end,
-  })
+      if cb then cb(obj.code == 0) end
+    end)
+  end)
 end
 
 --- Install a Pi extension. Defaults to npm:pivi (the pivi package itself).
@@ -179,15 +178,15 @@ end
 function M.install(source, cb)
   source = source or "npm:pivi"
   vim.notify("pivi: installing " .. source .. "…", vim.log.levels.INFO)
-  vim.fn.jobstart({ "pi", "install", source }, {
-    on_exit = function(_, code)
+  vim.system({ "pi", "install", source }, {}, function(obj)
+    vim.schedule(function()
       vim.notify(
-        code == 0 and ("pivi: installed " .. source) or ("pivi: install failed (" .. source .. ")"),
-        code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
+        obj.code == 0 and ("pivi: installed " .. source) or ("pivi: install failed (" .. source .. ")"),
+        obj.code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
       )
-      if cb then cb(code == 0) end
-    end,
-  })
+      if cb then cb(obj.code == 0) end
+    end)
+  end)
 end
 
 return M

@@ -29,6 +29,52 @@ import { Type } from "@sinclair/typebox";
  *   ← { "ok": false, "error": "..." }
  */
 
+// ── Module-level exports (consumed by tests and cursor-push handler) ────────
+
+export interface CursorPos { file: string; line: number; col: number; }
+
+export const liveState = {
+  buffers:    new Map<number, string[]>(),
+  cursor:     null as CursorPos | null,
+  rpcChannel: null as number | null,
+};
+
+/**
+ * Apply a nvim_buf_lines_event to a lines array.
+ * firstLine/lastLine are 0-indexed; lastLine=-1 means end-of-buffer.
+ */
+export function applyLinesEvent(
+  lines:     string[],
+  firstLine: number,
+  lastLine:  number,
+  linedata:  string[],
+): string[] {
+  const end = lastLine === -1 ? lines.length : lastLine;
+  return [...lines.slice(0, firstLine), ...linedata, ...lines.slice(end)];
+}
+
+// The Lua chunk extension.ts evaluates before every LLM call.
+// test/helpers/live-state.ts keeps a reference copy; if they drift the
+// nvim-context contract tests will catch it.
+const CONTEXT_CHUNK = `return (function()
+  local buf    = vim.api.nvim_get_current_buf()
+  local name   = vim.api.nvim_buf_get_name(buf)
+  if name == '' then return nil end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local rel    = vim.fn.fnamemodify(name, ':.')
+  local diags  = vim.diagnostic.get(buf)
+  local parts  = { string.format('Neovim: %s  line %d col %d',
+    rel, cursor[1], cursor[2] + 1) }
+  if #diags > 0 then
+    local sev = { 'ERROR', 'WARN', 'INFO', 'HINT' }
+    for _, d in ipairs(diags) do
+      table.insert(parts, string.format('  [%s] line %d: %s',
+        sev[d.severity] or '?', d.lnum + 1, d.message))
+    end
+  end
+  return table.concat(parts, '\\n')
+end)()`;
+
 // ── XDG socket paths ──────────────────────────────────────────────────────
 
 const uid: string | number = typeof process.getuid === "function" ? process.getuid() : "unknown";
@@ -146,7 +192,51 @@ export default function (pi: ExtensionAPI) {
       try {
         const client = await connectNvim(nvimSocket);
         nvimState = { client };
-        ctx.ui.notify("pivi: Neovim tools active", "info");
+
+        // Probe which optional plugins are installed and ablate tools accordingly.
+        // Pi only sees tools that will actually work in this session.
+        const plugins = await client.lua(
+          `return require('pivi.tools.probe').available()`
+        ) as { aerial: boolean; neotest: boolean; overseer: boolean; dap: boolean };
+
+        const activeTools = [
+          // Core tools — always available (built-in Neovim API only)
+          "nvim_lua", "nvim_buf_write", "nvim_buf_read",
+          "nvim_open_file", "nvim_goto_location", "nvim_get_buffer",
+          "nvim_set_lines", "nvim_get_diagnostics", "nvim_list_buffers",
+          "nvim_run_command", "nvim_notify",
+        ];
+        if (plugins.aerial)   activeTools.push("nvim_get_symbols");
+        if (plugins.neotest)  activeTools.push("nvim_run_tests");
+        if (plugins.overseer) activeTools.push("nvim_run_task");
+        if (plugins.dap)      activeTools.push("nvim_set_breakpoint", "nvim_get_variables");
+
+        try { pi.setActiveTools(activeTools); } catch {}
+
+        const extras = [
+          plugins.aerial   && "aerial",
+          plugins.neotest  && "neotest",
+          plugins.overseer && "overseer",
+          plugins.dap      && "dap",
+        ].filter(Boolean).join(", ");
+
+        // Get our msgpack-RPC channel ID so Neovim can push cursor events
+        liveState.rpcChannel = await client.channelId;
+
+        // Listen for cursor push notifications from pivi.nvim autocmds
+        client.on("notification", (method: string, args: unknown[]) => {
+          if (method !== "pivi_cursor") return;
+          const p = args[0] as { file?: string; line?: number; col?: number };
+          if (typeof p?.file !== "string" || typeof p?.line !== "number") return;
+          liveState.cursor = { file: p.file, line: p.line, col: p.col ?? 1 };
+        });
+
+        ctx.ui.notify(
+          extras
+            ? `pivi: Neovim tools active (+${extras})`
+            : "pivi: Neovim tools active",
+          "info"
+        );
       } catch (err) {
         ctx.ui.notify(`pivi: could not connect to Neovim RPC: ${err}`, "warning");
       }
@@ -171,7 +261,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (msg.type === "prompt" && typeof msg.message === "string") {
-      process.stdout.write("\x1b[?1049h\x1b[?1049l");
       pi.sendUserMessage(msg.message);
       respond(conn, { ok: true });
       return;
@@ -209,10 +298,48 @@ export default function (pi: ExtensionAPI) {
       } catch {}
       nvimState = null;
     }
+    liveState.buffers.clear();
+    liveState.cursor     = null;
+    liveState.rpcChannel = null;
   }
 
   pi.on("session_shutdown", async () => cleanup());
   process.on("exit", cleanup);
+
+  // ── before_agent_start: inject live Neovim context ─────────────────────
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    if (!nvimState) return;
+    try {
+      const fresh = await nvimState.client.lua(CONTEXT_CHUNK) as string | null;
+      if (!fresh) return;
+      return {
+        message: { role: "user", customType: "pivi-neovim-context", content: fresh, display: false },
+      };
+    } catch (e) {
+      ctx.ui.notify(`pivi: context error — ${e instanceof Error ? e.message : String(e)}`, "warning");
+    }
+  });
+
+  // ── context hook: refresh Neovim state before every LLM call ──────────────
+
+  pi.on("context", async (event, ctx) => {
+    if (!nvimState) return;
+    const ev = event as { messages?: Array<{ customType?: string; content: string; role: string; display?: boolean }> };
+    try {
+      const fresh = await nvimState.client.lua(CONTEXT_CHUNK) as string | null;
+      if (!fresh || !ev.messages) return;
+      const cleaned = ev.messages.filter((m) => m.customType !== "pivi-neovim-context");
+      return {
+        messages: [
+          ...cleaned,
+          { role: "user", customType: "pivi-neovim-context", content: fresh, display: false },
+        ],
+      };
+    } catch (e) {
+      ctx.ui.notify(`pivi: context refresh error — ${e instanceof Error ? e.message : String(e)}`, "warning");
+    }
+  });
 
   // ── Slash command: info ───────────────────────────────────────────────
 
@@ -232,6 +359,75 @@ export default function (pi: ExtensionAPI) {
   // ══════════════════════════════════════════════════════════════════════
 
   // ── nvim_open_file ───────────────────────────────────────────────────
+
+  // ── nvim_lua ─────────────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "nvim_lua",
+    label: "Neovim: execute Lua",
+    description:
+      "Evaluate arbitrary Lua in the live Neovim instance and return the result as a string. " +
+      "The full vim.* API is available. Use vim.system() for shell commands. " +
+      "Returns 'no Neovim session' when Pi is not running inside Neovim.",
+    parameters: Type.Object({
+      code: Type.String({ description: "Lua expression or do-block. Must return a value." }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return ok("no Neovim session");
+      try {
+        const result = await nvimState.client.lua(params.code as string);
+        return ok(result != null ? String(result) : "");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  // ── nvim_buf_write ────────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "nvim_buf_write",
+    label: "Neovim: write buffer",
+    description:
+      "Replace the entire content of a buffer identified by file path. " +
+      "Opens the file if not already open. Does not write to disk.",
+    parameters: Type.Object({
+      path:    Type.String({ description: "Absolute or relative file path" }),
+      content: Type.String({ description: "New content (newline-separated)" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const bufnr = await resolveBuffer(nvimState.client, params.path as string);
+        const lines  = (params.content as string).split("\n");
+        if (lines.at(-1) === "") lines.pop();
+        await nvimState.client.call("nvim_buf_set_lines", [bufnr, 0, -1, false, lines]);
+        liveState.buffers.delete(bufnr);
+        return ok(`wrote ${lines.length} lines to buffer ${bufnr}`);
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  // ── nvim_buf_read ─────────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "nvim_buf_read",
+    label: "Neovim: read buffer",
+    description:
+      "Return the current content of a buffer identified by file path. " +
+      "Returns live in-memory content (unsaved changes included).",
+    parameters: Type.Object({
+      path: Type.String({ description: "Absolute or relative file path" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const bufnr = await resolveBuffer(nvimState.client, params.path as string);
+        const lines  = await nvimState.client.call("nvim_buf_get_lines", [bufnr, 0, -1, false]) as string[];
+        return ok(lines.join("\n"));
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+
 
   pi.registerTool({
     name: "nvim_open_file",
@@ -443,21 +639,9 @@ export default function (pi: ExtensionAPI) {
       if (!nvimState) return noNvim();
       await resolveBuffer(nvimState.client, params.file);
       try {
-        const symbols = (await nvimState.client.lua(`
-          local ok, aerial = pcall(require, "aerial")
-          if not ok then return nil end
-          local items = aerial.get_location(true) or {}
-          local out = {}
-          for _, item in ipairs(items) do
-            table.insert(out, string.format("%s%s (line %d)",
-              string.rep("  ", (item.level or 1) - 1),
-              item.name,
-              item.lnum or 0
-            ))
-          end
-          return table.concat(out, "\\n")
-        `)) as string | null;
-
+        const symbols = await nvimState.client.lua(
+          `return require('pivi.tools.symbols').get()`
+        ) as string | null;
         if (!symbols) return err("aerial.nvim not installed or no symbols found.");
         return ok(symbols || "(no symbols)");
       } catch {
@@ -545,6 +729,97 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  // ── Soft-dep tools (registered always; guard inside Lua) ─────────────────
+  // pcall(require, 'plugin') in Lua so Pi always sees the tool and gets a
+  // clear "install X" message instead of a mystery failure.
+
+  pi.registerTool({
+    name: "nvim_run_tests",
+    label: "Neovim: run tests (neotest)",
+    description:
+      "Run tests for a file via neotest and return structured pass/fail results. " +
+      "Requires nvim-neotest/neotest + a language adapter (neotest-go, neotest-jest, etc.). " +
+      "Returns passed count, failed count, and per-failure details.",
+    parameters: Type.Object({
+      file: Type.Optional(Type.String({ description: "File to test (default: current buffer)" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const file = JSON.stringify(params.file ?? "");
+        const raw = await nvimState.client.lua(
+          `return require('pivi.tools.neotest').run_tests(${file})`
+        ) as string;
+        return ok(raw ?? "{}");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "nvim_run_task",
+    label: "Neovim: run build task (overseer)",
+    description:
+      "Run a named build task via overseer.nvim (make, cargo, npm, vscode tasks) and return output. " +
+      "Requires stevearc/overseer.nvim. Omit name to list available templates.",
+    parameters: Type.Object({
+      name: Type.Optional(Type.String({ description: "Task template name (omit to list available)" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const name = JSON.stringify(params.name ?? "");
+        const raw = await nvimState.client.lua(
+          `return require('pivi.tools.overseer').run_task(${name})`
+        ) as string;
+        return ok(raw ?? "{}");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "nvim_set_breakpoint",
+    label: "Neovim: toggle DAP breakpoint",
+    description:
+      "Toggle a debug breakpoint via nvim-dap. " +
+      "Requires mfussenegger/nvim-dap. Omit file/line to toggle at cursor.",
+    parameters: Type.Object({
+      file: Type.Optional(Type.String({ description: "File path (default: current buffer)" })),
+      line: Type.Optional(Type.Number({ description: "Line number 1-based (default: cursor)" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const file = JSON.stringify(params.file ?? "");
+        const line = params.line ?? 0;
+        const raw = await nvimState.client.lua(
+          `return require('pivi.tools.dap').toggle_breakpoint(${file}, ${line})`
+        ) as string;
+        return ok(raw ?? "{}");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "nvim_get_variables",
+    label: "Neovim: get DAP local variables",
+    description:
+      "Read local variables from the current debug frame via nvim-dap. " +
+      "Requires mfussenegger/nvim-dap and an active debug session. " +
+      "Returns variable names, types, and values.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const raw = await nvimState.client.lua(
+          `return require('pivi.tools.dap').get_variables()`
+        ) as string;
+        return ok(raw ?? "{}");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+
 
   // ── Helpers ──────────────────────────────────────────────────────────
 
