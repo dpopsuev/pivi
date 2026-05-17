@@ -1,0 +1,68 @@
+{
+  "name": "pivi",
+  "version": "0.2.0",
+  "description": "Pi agent \u2194 Neovim bridge \u2014 Pi drives, Neovim renders",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "neovim",
+    "editor"
+  ],
+  "files": [
+    "extension.ts",
+    "package.json",
+    "README.md",
+    "lua/",
+    "plugin/",
+    "skills/"
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49",
+    "neovim": "^5.4.0",
+    "typebox": "^1.1.38"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "fmt": "biome format --write extension.ts && stylua lua/ plugin/",
+    "fmt:check": "biome format extension.ts && stylua --check lua/ plugin/",
+    "lint": "biome lint extension.ts",
+    "lint:fix": "biome lint --write extension.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && tsc --noEmit",
+    "fix": "biome check --write extension.ts && stylua lua/ plugin/",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanyPops/pivi.git"
+  },
+  "author": "Daniel Popsuevich",
+  "license": "MIT",
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.61.0"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@mariozechner/pi-coding-agent": "^0.61.0",
+    "@types/node": "^24",
+    "typescript": "^5",
+    "vitest": "^4.1.6"
+  }
+}

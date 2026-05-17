@@ -1,0 +1,10 @@
+std = "neovim"
+
+[rules]
+# Allow intentionally broad patterns common in Neovim plugin code
+global_usage             = "allow"  # vim.* and other injected globals
+if_same_then_else        = "allow"  # guard-clause style is fine
+incorrect_standard_library_use = "allow"  # vim.loop / vim.uv compat shims
+mixed_table              = "allow"  # Lua tables used as both array + map
+multiple_statements      = "allow"  # chained assignments
+unused_variable          = "warn"   # flag unused locals but don't error
