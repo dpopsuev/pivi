@@ -856,7 +856,7 @@ export default function (pi: ExtensionAPI) {
       "Write a new Lua tool to the pivi user tool repository and register it immediately. " +
       "The tool persists across sessions and is discovered automatically on startup. " +
       "The Lua module must define M.meta = { description, parameters } and M.run(params), returning M. " +
-      "After forging, open the file and call nvim_lsp_wait to get lua_ls type-checking feedback.",
+      "After writing the tool, run the agent inner loop: nvim_open_file → nvim_lsp_wait → nvim_get_diagnostics → nvim_buf_write (repeat until clean) → nvim_lua to test.",
     parameters: Type.Object({
       name:        Type.String({ description: "snake_case tool name, e.g. \'find_failing_tests\'" }),
       description: Type.String({ description: "One-line description of what the tool does" }),
@@ -887,7 +887,7 @@ export default function (pi: ExtensionAPI) {
           },
         });
         try { pi.refreshTools(); } catch {}
-        return ok(`Tool \'${name}\' forged at ${result.path}. Open it with nvim_open_file then call nvim_lsp_wait to verify with lua_ls.`);
+        return ok(`Tool \'${name}\' written to ${result.path}. Run the agent inner loop: nvim_open_file → nvim_lsp_wait → nvim_get_diagnostics → fix → nvim_lua to test.`);
       } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
     },
   });
@@ -939,8 +939,8 @@ export default function (pi: ExtensionAPI) {
     label: "Neovim: wait for LSP to attach",
     description:
       "Wait until lua_ls attaches to a file and finishes its first diagnostic pass. " +
-      "Call this after nvim_open_file on a newly forged tool before reading nvim_get_diagnostics. " +
-      "Without it, \'no diagnostics\' is ambiguous — LSP may not be attached yet.",
+      "The synchronisation point in the agent inner loop: call after nvim_open_file, before nvim_get_diagnostics. " +
+      "Without it, \'no diagnostics\' is ambiguous — lua_ls may not have attached yet.",
     parameters: Type.Object({
       path:       Type.String({ description: "File path to wait on" }),
       timeout_ms: Type.Optional(Type.Number({ description: "Max wait ms (default 6000)" })),

@@ -7,6 +7,15 @@
 --- every rtp entry, so community plugins that include lua/pivi/user/*.lua
 --- contribute tools automatically — same pattern as LuaSnip's luasnippets/.
 ---
+--- Agent inner loop for authoring a new tool (write → verify → fix → test):
+---   1. pivi_forge_tool(name, description, lua)  -- write the file
+---   2. nvim_open_file(path)                     -- open in Neovim
+---   3. nvim_lsp_wait(path)                      -- synchronise: wait for lua_ls
+---   4. nvim_get_diagnostics(path)               -- read type errors / undefined globals
+---   5. nvim_buf_write(path, fixed_lua)           -- fix and repeat from 4
+---   6. nvim_lua('require("pivi.user.name").run({})') -- test with real input
+---   Tool is registered immediately and persists across sessions.
+---
 --- Module format (all user tools must follow this shape):
 ---
 ---   local M = {}

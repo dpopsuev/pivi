@@ -1,8 +1,11 @@
 --- pivi.tools.lsp — LSP synchronisation helpers for Pi.
 ---
+--- Provides the synchronisation point in the agent inner loop:
+---   write → open → [nvim_lsp_wait] → verify → fix → test
+---
 --- When Pi writes a new Lua file, lua_ls needs ~1-3 s to attach and index.
---- Pi cannot distinguish "no diagnostics = clean code" from "no diagnostics
---- = lua_ls not attached yet" without this synchronisation point.
+--- Without waiting, Pi cannot distinguish "no diagnostics = clean code"
+--- from "no diagnostics = lua_ls not attached yet".
 
 local M = {}
 
