@@ -1,7 +1,7 @@
 {
   "name": "pivi",
   "version": "0.2.0",
-  "description": "Pi agent \u2194 Neovim bridge \u2014 Pi drives, Neovim renders",
+  "description": "Pi agent ↔ Neovim bridge — Pi drives, Neovim renders",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@earendil-works/pi-coding-agent": "file:../../Workspace/pi-mono/packages/coding-agent",
     "@mariozechner/pi-coding-agent": "^0.61.0",
     "@types/node": "^24",
     "typescript": "^5",

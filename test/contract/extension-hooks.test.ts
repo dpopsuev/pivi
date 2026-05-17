@@ -241,6 +241,7 @@ describe("nvim_lua: vim.system() as a shell surface", () => {
   });
 
   it("returns 'no Neovim session' when Pi is not inside Neovim", async () => {
+    // No nvim: undefined actively unsets process.env.NVIM for this session.
     const [a, td] = await startPiviExtension({ cwd: CWD });
     try {
       const r = await invokeLua(a, `return "unreachable"`);
