@@ -211,6 +211,32 @@ export default function (pi: ExtensionAPI) {
         if (plugins.overseer) activeTools.push("nvim_run_task");
         if (plugins.dap)      activeTools.push("nvim_set_breakpoint", "nvim_get_variables");
 
+        // Discover user tools from all rtp entries (personal forge + community plugins).
+        // Each lua/pivi/user/<name>.lua with M.meta is registered as a Pi tool.
+        const userToolsRaw = await client.lua(
+          `return require('pivi.tools.forge').list_tools()`
+        ) as string;
+        const userToolsData = JSON.parse(userToolsRaw) as { tools: Array<{ name: string; description: string; path: string }> };
+        for (const ut of userToolsData.tools ?? []) {
+          const toolName = ut.name;
+          pi.registerTool({
+            name:        toolName,
+            label:       `Pivi user tool: ${toolName}`,
+            description: ut.description || `User-authored tool: ${toolName}`,
+            parameters:  Type.Object({}, { additionalProperties: true }),
+            async execute(_id, params, _signal, _onUpdate, _ctx) {
+              if (!nvimState) return noNvim();
+              try {
+                const raw = await nvimState.client.lua(
+                  `return require('pivi.tools.forge').call_tool(${JSON.stringify(toolName)}, ${JSON.stringify(JSON.stringify(params))})`
+                ) as string;
+                return ok(raw ?? "{}");
+              } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+            },
+          });
+          activeTools.push(toolName);
+        }
+
         try { pi.setActiveTools(activeTools); } catch {}
 
         const extras = [
@@ -815,6 +841,120 @@ export default function (pi: ExtensionAPI) {
           `return require('pivi.tools.dap').get_variables()`
         ) as string;
         return ok(raw ?? "{}");
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+
+
+  // ── Tool forge meta-tools ───────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "pivi_forge_tool",
+    label: "Pivi: forge a persistent Lua tool",
+    description:
+      "Write a new Lua tool to the pivi user tool repository and register it immediately. " +
+      "The tool persists across sessions and is discovered automatically on startup. " +
+      "The Lua module must define M.meta = { description, parameters } and M.run(params), returning M. " +
+      "After forging, open the file and call nvim_lsp_wait to get lua_ls type-checking feedback.",
+    parameters: Type.Object({
+      name:        Type.String({ description: "snake_case tool name, e.g. \'find_failing_tests\'" }),
+      description: Type.String({ description: "One-line description of what the tool does" }),
+      lua:         Type.String({ description: "Complete Lua module source (M.meta + M.run + return M)" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const name = (params.name as string).replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+        const raw  = await nvimState.client.lua(
+          `return require(\'pivi.tools.forge\').write_tool(${JSON.stringify(name)}, ${JSON.stringify(params.lua)})`
+        ) as string;
+        const result = JSON.parse(raw) as { path?: string; error?: string };
+        if (result.error) return err(result.error);
+        pi.registerTool({
+          name:        name,
+          label:       `Pivi user tool: ${name}`,
+          description: params.description as string,
+          parameters:  Type.Object({}, { additionalProperties: true }),
+          async execute(_id2, p2, _sig2, _upd2, _ctx2) {
+            if (!nvimState) return noNvim();
+            try {
+              const r = await nvimState.client.lua(
+                `return require(\'pivi.tools.forge\').call_tool(${JSON.stringify(name)}, ${JSON.stringify(JSON.stringify(p2))})`
+              ) as string;
+              return ok(r ?? "{}");
+            } catch (e2) { return err(e2 instanceof Error ? e2.message : String(e2)); }
+          },
+        });
+        try { pi.refreshTools(); } catch {}
+        return ok(`Tool \'${name}\' forged at ${result.path}. Open it with nvim_open_file then call nvim_lsp_wait to verify with lua_ls.`);
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "pivi_list_tools",
+    label: "Pivi: list user tool repository",
+    description:
+      "List all Pi-authored tools discovered across all rtp entries " +
+      "(personal forge + community pivi-tools plugins). " +
+      "Call this at session start to recall accumulated project knowledge.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const raw  = await nvimState.client.lua(
+          `return require(\'pivi.tools.forge\').list_tools()`
+        ) as string;
+        const data = JSON.parse(raw) as { tools: Array<{ name: string; description: string }> };
+        if (!data.tools?.length) return ok("No user tools in the repository yet. Use pivi_forge_tool to create one.");
+        const lines = data.tools.map((t: { name: string; description: string }) => `  ${t.name}: ${t.description || "(no description)"}`);
+        return ok(`User tools (${data.tools.length}):\n${lines.join("\n")}`);
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "pivi_drop_tool",
+    label: "Pivi: remove a user tool",
+    description: "Remove a tool from the personal forge. Community plugin tools are unaffected.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Tool name to remove" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const raw    = await nvimState.client.lua(
+          `return require(\'pivi.tools.forge\').drop_tool(${JSON.stringify(params.name)})`
+        ) as string;
+        const result = JSON.parse(raw) as { dropped?: string; error?: string };
+        if (result.error) return err(result.error);
+        return ok(`Tool \'${result.dropped}\' removed from the repository.`);
+      } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+    },
+  });
+
+  pi.registerTool({
+    name: "nvim_lsp_wait",
+    label: "Neovim: wait for LSP to attach",
+    description:
+      "Wait until lua_ls attaches to a file and finishes its first diagnostic pass. " +
+      "Call this after nvim_open_file on a newly forged tool before reading nvim_get_diagnostics. " +
+      "Without it, \'no diagnostics\' is ambiguous — LSP may not be attached yet.",
+    parameters: Type.Object({
+      path:       Type.String({ description: "File path to wait on" }),
+      timeout_ms: Type.Optional(Type.Number({ description: "Max wait ms (default 6000)" })),
+      client:     Type.Optional(Type.String({ description: "LSP client name (default: lua_ls)" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!nvimState) return noNvim();
+      try {
+        const raw    = await nvimState.client.lua(
+          `return require(\'pivi.tools.lsp\').wait(${JSON.stringify(params.path)}, ${params.timeout_ms ?? 6000}, ${JSON.stringify(params.client ?? "lua_ls")})`
+        ) as string;
+        const result = JSON.parse(raw) as { ok: boolean; bufnr?: number; error?: string };
+        if (!result.ok) return err(result.error ?? "LSP did not attach within timeout");
+        return ok(`lua_ls attached (bufnr=${result.bufnr}). Diagnostics are now reliable.`);
       } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
     },
   });

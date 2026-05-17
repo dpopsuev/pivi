@@ -67,11 +67,16 @@ describe("tools: noNvim path returns content, never throws", () => {
     ["nvim_list_buffers",    {}],
     ["nvim_run_command",     { command: "echo hi" }],
     ["nvim_notify",          { message: "hello" }],
-    // Soft-dep tools — return noNvim() when $NVIM absent, not a soft-dep error
+    // Soft-dep tools
     ["nvim_run_tests",       {}],
     ["nvim_run_task",        {}],
     ["nvim_set_breakpoint",  {}],
     ["nvim_get_variables",   {}],
+    // Forge meta-tools
+    ["pivi_forge_tool",      { name: "test", description: "test", lua: "return {}" }],
+    ["pivi_list_tools",      {}],
+    ["pivi_drop_tool",       { name: "test" }],
+    ["nvim_lsp_wait",        { path: "/tmp/test.lua" }],
   ];
 
   for (const [toolName, params] of testCases) {
@@ -126,6 +131,11 @@ describe("tool registration", () => {
       "nvim_run_task",
       "nvim_set_breakpoint",
       "nvim_get_variables",
+      // Tool forge meta-tools
+      "pivi_forge_tool",
+      "pivi_list_tools",
+      "pivi_drop_tool",
+      "nvim_lsp_wait",
     ];
     for (const name of expected) {
       expect(toolNames).toContain(name);
