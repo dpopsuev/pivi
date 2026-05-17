@@ -67,8 +67,11 @@ function M.launch()
 
   _job_id = vim.fn.jobstart({ "pi" }, {
     env = {
-      NVIM = vim.v.servername, -- Pi reads this and connects back to Neovim's API
-      PATH = vim.env.PATH,
+      NVIM                = vim.v.servername, -- Pi connects back to Neovim's RPC
+      PATH                = vim.env.PATH,
+      -- Use a pivi-specific config directory so only curated extensions load.
+      -- The user's global ~/.pi/agent/ settings (standalone Pi) are not touched.
+      PI_CODING_AGENT_DIR = vim.fn.expand("~/.pi/pivi-agent"),
     },
     on_exit = function(_, code)
       _job_id   = nil
