@@ -244,11 +244,15 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       if (!nvimState) return noNvim();
-      const abs = path.resolve(params.path);
-      await nvimState.client.call("nvim_command", [`edit ${abs}`]);
-      const bufnr = (await nvimState.client.call("nvim_get_current_buf", [])) as number;
-      const lineCount = (await nvimState.client.call("nvim_buf_line_count", [bufnr])) as number;
-      return ok(`Opened ${abs} (${lineCount} lines)`);
+      try {
+        const abs = path.resolve(params.path);
+        await nvimState.client.call("nvim_command", [`edit ${abs}`]);
+        const bufnr = (await nvimState.client.call("nvim_get_current_buf", [])) as number;
+        const lineCount = (await nvimState.client.call("nvim_buf_line_count", [bufnr])) as number;
+        return ok(`Opened ${abs} (${lineCount} lines)`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -268,10 +272,14 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      await resolveBuffer(nvimState.client, params.file);
-      const col = (params.col ?? 1) - 1; // nvim is 0-indexed for cols
-      await nvimState.client.call("nvim_win_set_cursor", [0, [params.line, col]]);
-      return ok(`Cursor at ${params.file}:${params.line}:${params.col ?? 1}`);
+      try {
+        await resolveBuffer(nvimState.client, params.file);
+        const col = (params.col ?? 1) - 1; // nvim is 0-indexed for cols
+        await nvimState.client.call("nvim_win_set_cursor", [0, [params.line, col]]);
+        return ok(`Cursor at ${params.file}:${params.line}:${params.col ?? 1}`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -293,19 +301,23 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const bufnr = await resolveBuffer(nvimState.client, params.file);
-      const start = (params.start_line ?? 1) - 1; // to 0-based
-      const end = params.end_line === -1 || params.end_line === undefined ? -1 : params.end_line; // -1 = end in nvim API
-      const lines = (await nvimState.client.call("nvim_buf_get_lines", [
-        bufnr,
-        start,
-        end,
-        false,
-      ])) as string[];
-      const numbered = lines
-        .map((l, i) => `${(start + i + 1).toString().padStart(4)} ${l}`)
-        .join("\n");
-      return ok(numbered || "(empty)");
+      try {
+        const bufnr = await resolveBuffer(nvimState.client, params.file);
+        const start = (params.start_line ?? 1) - 1; // to 0-based
+        const end = params.end_line === -1 || params.end_line === undefined ? -1 : params.end_line; // -1 = end in nvim API
+        const lines = (await nvimState.client.call("nvim_buf_get_lines", [
+          bufnr,
+          start,
+          end,
+          false,
+        ])) as string[];
+        const numbered = lines
+          .map((l, i) => `${(start + i + 1).toString().padStart(4)} ${l}`)
+          .join("\n");
+        return ok(numbered || "(empty)");
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -327,19 +339,23 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const bufnr = await resolveBuffer(nvimState.client, params.file);
-      await nvimState.client.call("nvim_buf_set_lines", [
-        bufnr,
-        params.start_line - 1, // 0-based start
-        params.end_line, // exclusive end in nvim (so 1-based inclusive = pass as-is)
-        false,
-        params.lines,
-      ]);
-      await nvimState.client.call("nvim_command", ["write"]);
-      return ok(
-        `Replaced lines ${params.start_line}–${params.end_line} in ${params.file} ` +
-          `with ${params.lines.length} line(s). File saved.`
-      );
+      try {
+        const bufnr = await resolveBuffer(nvimState.client, params.file);
+        await nvimState.client.call("nvim_buf_set_lines", [
+          bufnr,
+          params.start_line - 1, // 0-based start
+          params.end_line, // exclusive end in nvim (so 1-based inclusive = pass as-is)
+          false,
+          params.lines,
+        ]);
+        await nvimState.client.call("nvim_command", ["write"]);
+        return ok(
+          `Replaced lines ${params.start_line}–${params.end_line} in ${params.file} ` +
+            `with ${params.lines.length} line(s). File saved.`
+        );
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -367,8 +383,9 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const bufnr = await resolveBuffer(nvimState.client, params.file);
-      const raw = (await nvimState.client.lua(`
+      try {
+        const bufnr = await resolveBuffer(nvimState.client, params.file);
+        const raw = (await nvimState.client.lua(`
         local diags = vim.diagnostic.get(${bufnr})
         local out = {}
         for _, d in ipairs(diags) do
@@ -382,28 +399,31 @@ export default function (pi: ExtensionAPI) {
         end
         return out
       `)) as Array<{
-        lnum: number;
-        col: number;
-        severity: number;
-        message: string;
-        source?: string;
-      }>;
+          lnum: number;
+          col: number;
+          severity: number;
+          message: string;
+          source?: string;
+        }>;
 
-      const SEV = ["", "ERROR", "WARN", "INFO", "HINT"];
-      const minSev = params.severity
-        ? { error: 1, warning: 2, info: 3, hint: 4 }[params.severity]
-        : 4;
+        const SEV = ["", "ERROR", "WARN", "INFO", "HINT"];
+        const minSev = params.severity
+          ? { error: 1, warning: 2, info: 3, hint: 4 }[params.severity]
+          : 4;
 
-      const filtered = raw.filter((d) => d.severity <= (minSev ?? 4));
-      if (!filtered.length) return ok("No diagnostics.");
+        const filtered = raw.filter((d) => d.severity <= (minSev ?? 4));
+        if (!filtered.length) return ok("No diagnostics.");
 
-      const text = filtered
-        .map(
-          (d) =>
-            `  [${SEV[d.severity] ?? "?"}] ${d.lnum}:${d.col} ${d.message}${d.source ? ` (${d.source})` : ""}`
-        )
-        .join("\n");
-      return ok(`${filtered.length} diagnostic(s):\n${text}`);
+        const text = filtered
+          .map(
+            (d) =>
+              `  [${SEV[d.severity] ?? "?"}] ${d.lnum}:${d.col} ${d.message}${d.source ? ` (${d.source})` : ""}`
+          )
+          .join("\n");
+        return ok(`${filtered.length} diagnostic(s):\n${text}`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -455,16 +475,20 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const bufs = (await nvimState.client.call("nvim_list_bufs", [])) as number[];
-      const lines: string[] = [];
-      for (const bufnr of bufs) {
-        const name = (await nvimState.client.call("nvim_buf_get_name", [bufnr])) as string;
-        const loaded = (await nvimState.client.call("nvim_buf_is_loaded", [bufnr])) as boolean;
-        if (loaded && name) {
-          lines.push(`  [${bufnr}] ${name}`);
+      try {
+        const bufs = (await nvimState.client.call("nvim_list_bufs", [])) as number[];
+        const lines: string[] = [];
+        for (const bufnr of bufs) {
+          const name = (await nvimState.client.call("nvim_buf_get_name", [bufnr])) as string;
+          const loaded = (await nvimState.client.call("nvim_buf_is_loaded", [bufnr])) as boolean;
+          if (loaded && name) {
+            lines.push(`  [${bufnr}] ${name}`);
+          }
         }
+        return ok(lines.length ? lines.join("\n") : "(no open buffers)");
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
       }
-      return ok(lines.length ? lines.join("\n") : "(no open buffers)");
     },
   });
 
@@ -482,11 +506,15 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const result = (await nvimState.client.call("nvim_exec2", [
-        params.command,
-        { output: true },
-      ])) as { output?: string };
-      return ok(result.output?.trim() || `Ran: ${params.command}`);
+      try {
+        const result = (await nvimState.client.call("nvim_exec2", [
+          params.command,
+          { output: true },
+        ])) as { output?: string };
+        return ok(result.output?.trim() || `Ran: ${params.command}`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
@@ -508,9 +536,13 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       if (!nvimState) return noNvim();
-      const level = LEVEL_MAP[params.level ?? "info"];
-      await nvimState.client.call("nvim_notify", [params.message, level, {}]);
-      return ok(`Notification sent: ${params.message}`);
+      try {
+        const level = LEVEL_MAP[params.level ?? "info"];
+        await nvimState.client.call("nvim_notify", [params.message, level, {}]);
+        return ok(`Notification sent: ${params.message}`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
     },
   });
 
